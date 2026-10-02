@@ -1,12 +1,12 @@
-# 📝 Simple Todo App
+# 📝 Simple Todo App (WSJ3)
 
 A simple and clean Todo app built to practice Android development with **Jetpack Compose**. 
-This is a beginner-friendly project that focuses on basic UI components and state management in Compose.
+This is a beginner-friendly project that focuses on basic UI components and state management in Compose .
 
 ## ✨ What it does
 - Add new tasks to your list using the **+** button.
 - Pick a color for each task from a set of predefined colors.
-- View all your tasks in a scrollable list.
+- Privacy button – Ability to lock tasks with a passcode.
 
 ## 🛠 Built with
 - Kotlin
