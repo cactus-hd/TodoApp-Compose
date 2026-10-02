@@ -16,12 +16,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.AlertDialog
@@ -96,6 +98,7 @@ fun Mainpage(modifier: Modifier = Modifier) {
     var passwordError by remember { mutableStateOf("") }
 
     val colorOptions = listOf(
+        Color(0xFF363636),
         Color(0xFF0277BD),
         Color(0xFFFF8F00),
         Color(0xFF2E7D32),
@@ -161,7 +164,7 @@ fun Mainpage(modifier: Modifier = Modifier) {
                         }
                     },
                     modifier = Modifier.size(52.dp),
-                    containerColor = Color(0xFF4D7CFE),
+                    containerColor = Color(0xFF525252),
                     contentColor = Color.White
                 ) {
                     Icon(
@@ -174,14 +177,19 @@ fun Mainpage(modifier: Modifier = Modifier) {
                     onClick = {
                         isSheetOpen = true
                     },
-                    modifier = Modifier.size(59.dp),
-                    containerColor = Color(0xFF2AB295),
+                    containerColor = Color.DarkGray,
                     contentColor = Color.White
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Add note"
-                    )
+                   Row(verticalAlignment = Alignment.CenterVertically){
+                       Spacer( modifier = Modifier.width( 6.dp))
+                       Icon(
+                           imageVector = Icons.Default.Create,
+                           contentDescription = "Add note"
+                       )
+                       Spacer( modifier = Modifier.width( 6.dp))
+                       Text("Create")
+                       Spacer( modifier = Modifier.width( 12.dp))
+                   }
                 }
             }
 
@@ -251,7 +259,7 @@ fun Mainpage(modifier: Modifier = Modifier) {
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF2AB295)
+                                containerColor = Color(0xFF00AAB9)
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
