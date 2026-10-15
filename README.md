@@ -11,7 +11,7 @@ This is a beginner-friendly project that focuses on basic UI components and stat
 ## 🛠 Built with
 - Kotlin
 - Jetpack Compose (UI Toolkit)
-- Material 3 Design Components
+- Material 3 Design Components 
 
 ## 🚀 How to run
 1. Clone the repository.
