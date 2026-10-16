@@ -1,6 +1,7 @@
 package com.example.moduletwo
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.util.Base64
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
@@ -14,15 +15,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
@@ -52,18 +53,29 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.security.MessageDigest
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.SecretKeySpec
 
-data class TodoItem(val text: String, val color: Color)
+data class TodoItem(val id: Long, val text: String, val color: Color)
 
 private const val PREFS_NAME = "notes_prefs"
 private const val NOTES_KEY = "notes"
+private const val NOTES_ENCRYPTED_KEY = "notes_encrypted"
 private const val PASSWORD_KEY = "password_hash"
+private const val SALT_KEY = "password_salt"
+private const val GCM_IV_LENGTH = 12
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -73,29 +85,40 @@ fun Mainpage(modifier: Modifier = Modifier) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
-    val itemList = remember {
-        mutableStateListOf<TodoItem>().apply {
-            addAll(loadNotes(prefs))
+    val initialPasswordHash = remember {
+        try {
+            prefs.getString(PASSWORD_KEY, null)
+        } catch (e: Exception) {
+            null
         }
+    }
+
+    var hasPassword by remember { mutableStateOf(initialPasswordHash != null) }
+    var isLocked by remember { mutableStateOf(initialPasswordHash != null) }
+    var cryptoKey by remember { mutableStateOf<SecretKey?>(null) }
+
+    val itemList = remember {
+        val list = mutableStateListOf<TodoItem>()
+        if (initialPasswordHash == null) {
+            list.addAll(safeLoad(prefs, null))
+        }
+        list
     }
 
     var isSheetOpen by remember { mutableStateOf(false) }
     var todoName by remember { mutableStateOf("") }
     var selectedColor by remember { mutableStateOf(Color(0xFF0277BD)) }
 
-    var hasPassword by remember {
-        mutableStateOf(prefs.getString(PASSWORD_KEY, null) != null)
-    }
-
-    var isLocked by remember {
-        mutableStateOf(hasPassword)
-    }
-
     var showPasswordDialog by remember { mutableStateOf(false) }
     var showUnlockDialog by remember { mutableStateOf(false) }
+    var showRemovePasswordDialog by remember { mutableStateOf(false) }
+
     var passwordInput by remember { mutableStateOf("") }
     var confirmPasswordInput by remember { mutableStateOf("") }
     var passwordError by remember { mutableStateOf("") }
+
+    var removePasswordInput by remember { mutableStateOf("") }
+    var removePasswordError by remember { mutableStateOf("") }
 
     val colorOptions = listOf(
         Color(0xFF363636),
@@ -107,37 +130,82 @@ fun Mainpage(modifier: Modifier = Modifier) {
         Color(0xFFD84315)
     )
 
-    fun saveCurrentNotes() {
-        saveNotes(prefs, itemList)
+    val sheetState = rememberModalBottomSheetState()
+
+    fun persist() {
+        safeSave(prefs, itemList, cryptoKey)
     }
 
-    Scaffold(
-        modifier = modifier.fillMaxSize()
-    ) { paddingValues ->
+    Scaffold(modifier = modifier.fillMaxSize()) { paddingValues ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp)
-                    .padding(bottom = 92.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                itemsIndexed(
-                    items = itemList,
-                    key = { index, item -> "$index-${item.text}-${item.color.value}" }
-                ) { index, item ->
-                    NoteCard(
-                        item = item,
-                        locked = isLocked,
-                        onDelete = {
-                            itemList.removeAt(index)
-                            saveCurrentNotes()
-                        }
+            if (itemList.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = 140.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = if (hasPassword && isLocked)
+                            "Notes are locked.\nTap the lock to unlock."
+                        else
+                            "No notes yet.\nTap Create to add one.",
+                        color = Color.Gray,
+                        textAlign = TextAlign.Center,
+                        fontSize = 15.sp
                     )
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 12.dp)
+                        .padding(bottom = 140.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        val leftItems = itemList.filterIndexed { index, _ -> index % 2 == 0 }
+                        val rightItems = itemList.filterIndexed { index, _ -> index % 2 == 1 }
+
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            leftItems.forEach { item ->
+                                NoteCard(
+                                    item = item,
+                                    locked = isLocked,
+                                    onDelete = {
+                                        itemList.removeAll { it.id == item.id }
+                                        persist()
+                                    }
+                                )
+                            }
+                        }
+
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            rightItems.forEach { item ->
+                                NoteCard(
+                                    item = item,
+                                    locked = isLocked,
+                                    onDelete = {
+                                        itemList.removeAll { it.id == item.id }
+                                        persist()
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -148,6 +216,24 @@ fun Mainpage(modifier: Modifier = Modifier) {
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                if (hasPassword && !isLocked) {
+                    FloatingActionButton(
+                        onClick = {
+                            removePasswordInput = ""
+                            removePasswordError = ""
+                            showRemovePasswordDialog = true
+                        },
+                        modifier = Modifier.size(52.dp),
+                        containerColor = Color(0xFFB71C1C),
+                        contentColor = Color.White
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Remove password"
+                        )
+                    }
+                }
+
                 FloatingActionButton(
                     onClick = {
                         if (!hasPassword) {
@@ -161,6 +247,8 @@ fun Mainpage(modifier: Modifier = Modifier) {
                             showUnlockDialog = true
                         } else {
                             isLocked = true
+                            cryptoKey = null
+                            itemList.clear()
                         }
                     },
                     modifier = Modifier.size(52.dp),
@@ -168,37 +256,41 @@ fun Mainpage(modifier: Modifier = Modifier) {
                     contentColor = Color.White
                 ) {
                     Icon(
-                        imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.Lock,
-                        contentDescription = if (isLocked) "Unlock notes" else "Lock notes"
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = if (isLocked) "Unlock" else "Lock"
                     )
                 }
 
                 FloatingActionButton(
                     onClick = {
-                        isSheetOpen = true
+                        if (hasPassword && cryptoKey == null) {
+                            passwordInput = ""
+                            passwordError = ""
+                            showUnlockDialog = true
+                        } else {
+                            isSheetOpen = true
+                        }
                     },
                     containerColor = Color.DarkGray,
                     contentColor = Color.White
                 ) {
-                   Row(verticalAlignment = Alignment.CenterVertically){
-                       Spacer( modifier = Modifier.width( 6.dp))
-                       Icon(
-                           imageVector = Icons.Default.Create,
-                           contentDescription = "Add note"
-                       )
-                       Spacer( modifier = Modifier.width( 6.dp))
-                       Text("Create")
-                       Spacer( modifier = Modifier.width( 12.dp))
-                   }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            imageVector = Icons.Default.Create,
+                            contentDescription = "Create"
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Create")
+                        Spacer(modifier = Modifier.width(12.dp))
+                    }
                 }
             }
 
             if (isSheetOpen) {
                 ModalBottomSheet(
-                    onDismissRequest = {
-                        isSheetOpen = false
-                    },
-                    sheetState = rememberModalBottomSheetState()
+                    onDismissRequest = { isSheetOpen = false },
+                    sheetState = sheetState
                 ) {
                     Column(
                         modifier = Modifier
@@ -228,9 +320,7 @@ fun Mainpage(modifier: Modifier = Modifier) {
                                             color = if (selectedColor == color) Color.Black else Color.Transparent,
                                             shape = CircleShape
                                         )
-                                        .clickable {
-                                            selectedColor = color
-                                        }
+                                        .clickable { selectedColor = color }
                                 )
                             }
                         }
@@ -249,11 +339,12 @@ fun Mainpage(modifier: Modifier = Modifier) {
                                 if (todoName.isNotBlank()) {
                                     itemList.add(
                                         TodoItem(
+                                            id = System.nanoTime(),
                                             text = todoName.trim(),
                                             color = selectedColor
                                         )
                                     )
-                                    saveCurrentNotes()
+                                    persist()
                                     todoName = ""
                                     isSheetOpen = false
                                 }
@@ -274,12 +365,8 @@ fun Mainpage(modifier: Modifier = Modifier) {
 
             if (showPasswordDialog) {
                 AlertDialog(
-                    onDismissRequest = {
-                        showPasswordDialog = false
-                    },
-                    title = {
-                        Text("Set Password")
-                    },
+                    onDismissRequest = { showPasswordDialog = false },
+                    title = { Text("Set Password") },
                     text = {
                         Column {
                             OutlinedTextField(
@@ -294,7 +381,7 @@ fun Mainpage(modifier: Modifier = Modifier) {
                                 singleLine = true
                             )
 
-                            Spacer(modifier = Modifier.size(10.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
 
                             OutlinedTextField(
                                 value = confirmPasswordInput,
@@ -328,15 +415,31 @@ fun Mainpage(modifier: Modifier = Modifier) {
                                         passwordError = "Passwords do not match"
                                     }
                                     else -> {
-                                        prefs.edit()
-                                            .putString(PASSWORD_KEY, hashPassword(passwordInput))
-                                            .apply()
-                                        hasPassword = true
-                                        isLocked = true
-                                        passwordInput = ""
-                                        confirmPasswordInput = ""
-                                        passwordError = ""
-                                        showPasswordDialog = false
+                                        try {
+                                            val salt = ByteArray(16)
+                                            SecureRandom().nextBytes(salt)
+                                            val key = deriveKey(passwordInput, salt)
+
+                                            prefs.edit()
+                                                .putString(PASSWORD_KEY, hashPassword(passwordInput))
+                                                .putString(
+                                                    SALT_KEY,
+                                                    Base64.encodeToString(salt, Base64.NO_WRAP)
+                                                )
+                                                .apply()
+
+                                            cryptoKey = key
+                                            hasPassword = true
+                                            isLocked = false
+                                            safeSave(prefs, itemList, key)
+
+                                            passwordInput = ""
+                                            confirmPasswordInput = ""
+                                            passwordError = ""
+                                            showPasswordDialog = false
+                                        } catch (e: Exception) {
+                                            passwordError = "Could not secure notes on this device"
+                                        }
                                     }
                                 }
                             }
@@ -345,11 +448,7 @@ fun Mainpage(modifier: Modifier = Modifier) {
                         }
                     },
                     dismissButton = {
-                        TextButton(
-                            onClick = {
-                                showPasswordDialog = false
-                            }
-                        ) {
+                        TextButton(onClick = { showPasswordDialog = false }) {
                             Text("Cancel")
                         }
                     }
@@ -358,12 +457,8 @@ fun Mainpage(modifier: Modifier = Modifier) {
 
             if (showUnlockDialog) {
                 AlertDialog(
-                    onDismissRequest = {
-                        showUnlockDialog = false
-                    },
-                    title = {
-                        Text("Unlock Notes")
-                    },
+                    onDismissRequest = { showUnlockDialog = false },
+                    title = { Text("Unlock Notes") },
                     text = {
                         Column {
                             OutlinedTextField(
@@ -390,12 +485,29 @@ fun Mainpage(modifier: Modifier = Modifier) {
                     confirmButton = {
                         TextButton(
                             onClick = {
-                                val savedHash = prefs.getString(PASSWORD_KEY, null)
+                                val savedHash = try {
+                                    prefs.getString(PASSWORD_KEY, null)
+                                } catch (e: Exception) {
+                                    null
+                                }
+
                                 if (savedHash != null && hashPassword(passwordInput) == savedHash) {
-                                    isLocked = false
-                                    passwordInput = ""
-                                    passwordError = ""
-                                    showUnlockDialog = false
+                                    try {
+                                        val salt = getOrCreateSalt(prefs)
+                                        val key = deriveKey(passwordInput, salt)
+                                        cryptoKey = key
+
+                                        val loaded = safeLoad(prefs, key)
+                                        itemList.clear()
+                                        itemList.addAll(loaded)
+
+                                        isLocked = false
+                                        passwordInput = ""
+                                        passwordError = ""
+                                        showUnlockDialog = false
+                                    } catch (e: Exception) {
+                                        passwordError = "Could not read notes"
+                                    }
                                 } else {
                                     passwordError = "Wrong password"
                                 }
@@ -417,6 +529,88 @@ fun Mainpage(modifier: Modifier = Modifier) {
                     }
                 )
             }
+
+            if (showRemovePasswordDialog) {
+                AlertDialog(
+                    onDismissRequest = { showRemovePasswordDialog = false },
+                    title = { Text("Remove Password") },
+                    text = {
+                        Column {
+                            Text(
+                                text = "Enter the current password. Your notes will be saved without encryption.",
+                                fontSize = 14.sp,
+                                modifier = Modifier.padding(bottom = 10.dp)
+                            )
+
+                            OutlinedTextField(
+                                value = removePasswordInput,
+                                onValueChange = {
+                                    removePasswordInput = it
+                                    removePasswordError = ""
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("Current password") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true
+                            )
+
+                            AnimatedVisibility(removePasswordError.isNotEmpty()) {
+                                Text(
+                                    text = removePasswordError,
+                                    color = Color(0xFFD32F2F),
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                val savedHash = try {
+                                    prefs.getString(PASSWORD_KEY, null)
+                                } catch (e: Exception) {
+                                    null
+                                }
+
+                                if (savedHash != null && hashPassword(removePasswordInput) == savedHash) {
+                                    try {
+                                        safeSave(prefs, itemList, null)
+                                        prefs.edit()
+                                            .remove(PASSWORD_KEY)
+                                            .remove(SALT_KEY)
+                                            .apply()
+
+                                        hasPassword = false
+                                        isLocked = false
+                                        cryptoKey = null
+
+                                        removePasswordInput = ""
+                                        removePasswordError = ""
+                                        showRemovePasswordDialog = false
+                                    } catch (e: Exception) {
+                                        removePasswordError = "Could not remove password"
+                                    }
+                                } else {
+                                    removePasswordError = "Wrong password"
+                                }
+                            }
+                        ) {
+                            Text("Remove")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = {
+                                removePasswordInput = ""
+                                removePasswordError = ""
+                                showRemovePasswordDialog = false
+                            }
+                        ) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
         }
     }
 }
@@ -429,9 +623,7 @@ private fun NoteCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = item.color
-        ),
+        colors = CardDefaults.cardColors(containerColor = item.color),
         shape = RoundedCornerShape(14.dp),
         border = BorderStroke(1.dp, Color.Gray)
     ) {
@@ -449,67 +641,133 @@ private fun NoteCard(
                 fontSize = 16.sp
             )
 
-            IconButton(
-                onClick = onDelete
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = "Delete note"
-                )
-            }
-        }
-    }
-}
-
-private fun saveNotes(
-    prefs: android.content.SharedPreferences,
-    notes: List<TodoItem>
-) {
-    val serialized = notes.joinToString("\\n") {
-        val encodedText = Base64.encodeToString(
-            it.text.toByteArray(Charsets.UTF_8),
-            Base64.NO_WRAP
-        )
-        "${it.color.value}|$encodedText"
-    }
-
-    prefs.edit()
-        .putString(NOTES_KEY, serialized)
-        .apply()
-}
-
-private fun loadNotes(
-    prefs: android.content.SharedPreferences
-): List<TodoItem> {
-    val saved = prefs.getString(NOTES_KEY, null) ?: return emptyList()
-
-    return saved
-        .split("\\n")
-        .filter { it.isNotBlank() }
-        .mapNotNull { line ->
-            val separatorIndex = line.indexOf("|")
-            if (separatorIndex <= 0) {
-                null
-            } else {
-                val colorValue = line.substring(0, separatorIndex).toLongOrNull()
-                val encodedText = line.substring(separatorIndex + 1)
-
-                if (colorValue == null) {
-                    null
-                } else {
-                    runCatching {
-                        val text = String(
-                            Base64.decode(encodedText, Base64.NO_WRAP),
-                            Charsets.UTF_8
-                        )
-                        TodoItem(
-                            text = text,
-                            color = Color(colorValue.toULong())
-                        )
-                    }.getOrNull()
+            if (!locked) {
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete note"
+                    )
                 }
             }
         }
+    }
+}
+
+private fun safeSave(
+    prefs: SharedPreferences,
+    notes: List<TodoItem>,
+    key: SecretKey?
+) {
+    try {
+        val serialized = notes.joinToString("\n") { item ->
+            val argb = item.color.toArgb().toLong() and 0xFFFFFFFFL
+            val encodedText = Base64.encodeToString(
+                item.text.toByteArray(Charsets.UTF_8),
+                Base64.NO_WRAP
+            )
+            "${item.id}|$argb|$encodedText"
+        }
+
+        if (key != null) {
+            val encrypted = try {
+                encryptText(serialized, key)
+            } catch (e: Exception) {
+                serialized
+            }
+            prefs.edit()
+                .putString(NOTES_KEY, encrypted)
+                .putBoolean(NOTES_ENCRYPTED_KEY, encrypted != serialized)
+                .apply()
+        } else {
+            prefs.edit()
+                .putString(NOTES_KEY, serialized)
+                .putBoolean(NOTES_ENCRYPTED_KEY, false)
+                .apply()
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+}
+
+private fun safeLoad(
+    prefs: SharedPreferences,
+    key: SecretKey?
+): List<TodoItem> {
+    return try {
+        val stored = prefs.getString(NOTES_KEY, null) ?: return emptyList()
+        val isEncrypted = prefs.getBoolean(NOTES_ENCRYPTED_KEY, false)
+
+        val serialized = if (isEncrypted) {
+            val k = key ?: return emptyList()
+            try {
+                decryptText(stored, k)
+            } catch (e: Exception) {
+                return emptyList()
+            }
+        } else {
+            stored
+        }
+
+        serialized
+            .split("\n")
+            .filter { it.isNotBlank() }
+            .mapNotNull { line ->
+                try {
+                    val parts = line.split("|", limit = 3)
+                    if (parts.size != 3) return@mapNotNull null
+
+                    val id = parts[0].toLongOrNull() ?: System.nanoTime()
+                    val argb = parts[1].toLongOrNull() ?: return@mapNotNull null
+                    val text = String(
+                        Base64.decode(parts[2], Base64.NO_WRAP),
+                        Charsets.UTF_8
+                    )
+                    TodoItem(id = id, text = text, color = Color(argb.toInt()))
+                } catch (e: Exception) {
+                    null
+                }
+            }
+    } catch (e: Exception) {
+        emptyList()
+    }
+}
+
+private fun deriveKey(password: String, salt: ByteArray): SecretKey {
+    val spec = PBEKeySpec(password.toCharArray(), salt, 10_000, 128)
+    val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1")
+    return SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
+}
+
+private fun encryptText(plain: String, key: SecretKey): String {
+    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    val iv = ByteArray(GCM_IV_LENGTH)
+    SecureRandom().nextBytes(iv)
+    cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, iv))
+    val encrypted = cipher.doFinal(plain.toByteArray(Charsets.UTF_8))
+    return Base64.encodeToString(iv + encrypted, Base64.NO_WRAP)
+}
+
+private fun decryptText(data: String, key: SecretKey): String {
+    val raw = Base64.decode(data, Base64.NO_WRAP)
+    if (raw.size <= GCM_IV_LENGTH) throw IllegalArgumentException("bad data")
+    val iv = raw.copyOfRange(0, GCM_IV_LENGTH)
+    val encrypted = raw.copyOfRange(GCM_IV_LENGTH, raw.size)
+    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+    return String(cipher.doFinal(encrypted), Charsets.UTF_8)
+}
+
+private fun getOrCreateSalt(prefs: SharedPreferences): ByteArray {
+    val stored = prefs.getString(SALT_KEY, null)
+    if (stored != null) {
+        return Base64.decode(stored, Base64.NO_WRAP)
+    }
+    val salt = ByteArray(16)
+    SecureRandom().nextBytes(salt)
+    prefs.edit()
+        .putString(SALT_KEY, Base64.encodeToString(salt, Base64.NO_WRAP))
+        .apply()
+    return salt
 }
 
 private fun hashPassword(password: String): String {
