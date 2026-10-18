@@ -18,6 +18,7 @@ This is a beginner-friendly project that focuses on basic UI components and stat
 2. Open the project in **Android Studio**.
 3. Let Gradle sync finish.
 4. Run the app on an emulator or Android device.
+## also you can test the app by downloading APK file in release
 
 ## 📄 License
 This project is licensed under the MIT License.
